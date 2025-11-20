@@ -11,5 +11,7 @@ dependencies = [
     "langchain-anthropic>=1.1.0",
     "langchain-huggingface>=0.1.2",
     "loadenv>=0.1.1",
+    "openpyxl>=3.1.5",
+    "pandas>=2.3.3",
     "sentence-transformers>=3.3.1",
 ]
