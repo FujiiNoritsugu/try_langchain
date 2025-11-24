@@ -145,6 +145,13 @@ def search_similar_vectors(query_text: str, neighbor_count: int = 3):
         model_name="intfloat/multilingual-e5-large"
     )
 
+    # ツアーIDとツアー名のマッピング
+    tour_names = {
+        "tour_001": "秋の美濃の滝見学ツアー",
+        "tour_002": "春の京都桜巡り",
+        "tour_003": "夏の沖縄ビーチリゾート"
+    }
+
     # クエリをベクトル化
     query_vector = embeddings.embed_query(query_text)
 
@@ -159,8 +166,10 @@ def search_similar_vectors(query_text: str, neighbor_count: int = 3):
 
     print(f"\n=== 類似検索結果: '{query_text}' ===")
     for idx, neighbor in enumerate(response[0]):
-        print(f"\n{idx + 1}. ID: {neighbor.id}")
-        print(f"   距離: {neighbor.distance}")
+        tour_name = tour_names.get(neighbor.id, "不明なツアー")
+        print(f"\n{idx + 1}. {tour_name}")
+        print(f"   ツアーID: {neighbor.id}")
+        print(f"   類似度スコア: {neighbor.distance:.4f}")
 
 
 if __name__ == "__main__":
