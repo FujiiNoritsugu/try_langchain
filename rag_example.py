@@ -3,6 +3,7 @@ LangChainでVector SearchとRAGを実装するプログラム
 """
 
 import os
+import json
 from typing import List
 from dotenv import load_dotenv
 from google.cloud import aiplatform
@@ -60,19 +61,37 @@ class VectorSearchRetriever(BaseRetriever):
         neighbors = response[0]
 
         for neighbor in neighbors:
-            # restrictsからツアー名を取得
+            # restrictsからツアー情報（JSON）を取得
+            tour_data = None
             tour_name = "不明なツアー"
             if hasattr(neighbor, "restricts") and neighbor.restricts:
                 for restrict in neighbor.restricts:
-                    if restrict.namespace == "tour_name" and restrict.allow_list:
-                        tour_name = restrict.allow_list[0]
-                        break
+                    # Namespaceオブジェクトの属性は'name'と'allow_tokens'
+                    if hasattr(restrict, "name") and restrict.name == "tour_data":
+                        if hasattr(restrict, "allow_tokens") and restrict.allow_tokens:
+                            try:
+                                tour_data = json.loads(restrict.allow_tokens[0])
+                                tour_name = tour_data.get("name", "不明なツアー")
+                            except json.JSONDecodeError:
+                                pass
+                            break
+
+            # ツアー詳細情報を整形
+            if tour_data:
+                page_content = f"""ツアー名: {tour_data.get('name', 'N/A')}
+場所: {tour_data.get('location', 'N/A')}
+時期: {tour_data.get('season', 'N/A')}
+説明: {tour_data.get('description', 'N/A')}
+見どころ: {', '.join(tour_data.get('highlights', []))}"""
+            else:
+                page_content = tour_name
 
             # Documentオブジェクトを作成
             doc = Document(
-                page_content=tour_name,
+                page_content=page_content,
                 metadata={
                     "tour_id": neighbor.id,
+                    "tour_name": tour_name,
                     "similarity_score": float(neighbor.distance),
                 },
             )
@@ -83,12 +102,10 @@ class VectorSearchRetriever(BaseRetriever):
 
 def format_docs(docs: List[Document]) -> str:
     """ドキュメントをフォーマット"""
-    return "\n\n".join(
-        [
-            f"- {doc.page_content} (ツアーID: {doc.metadata['tour_id']}, 類似度: {doc.metadata['similarity_score']:.4f})"
-            for doc in docs
-        ]
-    )
+    formatted = []
+    for idx, doc in enumerate(docs, 1):
+        formatted.append(f"【ツアー {idx}】\n{doc.page_content}\n(類似度スコア: {doc.metadata['similarity_score']:.4f})")
+    return "\n\n".join(formatted)
 
 
 def create_rag_chain():
@@ -174,9 +191,14 @@ def run_rag_query(query: str):
     print(f"{'='*60}")
 
     for idx, doc in enumerate(source_docs, 1):
-        print(f"\n{idx}. {doc.page_content}")
+        print(f"\n{idx}. {doc.metadata['tour_name']}")
         print(f"   ツアーID: {doc.metadata['tour_id']}")
         print(f"   類似度スコア: {doc.metadata['similarity_score']:.4f}")
+        print(f"\n   詳細:")
+        # page_contentを整形して表示
+        for line in doc.page_content.split('\n'):
+            if line.strip():
+                print(f"   {line}")
 
 
 if __name__ == "__main__":
