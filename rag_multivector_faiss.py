@@ -27,8 +27,8 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from langchain.retrievers.multi_vector import MultiVectorRetriever
-from langchain.storage import InMemoryStore
+from langchain_classic.retrievers.multi_vector import MultiVectorRetriever
+from langchain_core.stores import InMemoryStore
 
 load_dotenv()
 
@@ -66,7 +66,7 @@ def create_parent_documents(tours: List[dict]) -> List[Document]:
             metadata={
                 "tour_id": tour_id,
                 "tour_name": tour.get('name', 'N/A'),
-                "doc_id": str(uuid.uuid4()),  # ユニークなID
+                "doc_id": tour_id,  # tour_idをdoc_idとして使用（固定値）
             }
         )
 

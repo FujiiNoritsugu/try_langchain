@@ -33,7 +33,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from langchain.storage import InMemoryStore
+from langchain_core.stores import InMemoryStore
 
 load_dotenv()
 
@@ -315,7 +315,9 @@ def run_rag_query(query: str, use_multi_vector: bool = True):
     for idx, doc in enumerate(source_docs, 1):
         print(f"\n{idx}. {doc.metadata['tour_name']}")
         print(f"   ツアーID: {doc.metadata['tour_id']}")
-        print(f"   類似度スコア: {doc.metadata['similarity_score']:.4f}")
+        # MultiVectorRetrieverの場合はsimilarity_scoreがないため条件分岐
+        if 'similarity_score' in doc.metadata:
+            print(f"   類似度スコア: {doc.metadata['similarity_score']:.4f}")
         print(f"\n   詳細:")
         # page_contentを整形して表示
         for line in doc.page_content.split('\n'):
