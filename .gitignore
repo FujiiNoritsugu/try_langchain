@@ -9,3 +9,11 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Generated indexes and data
+faiss_index/
+faiss_index_*/
+raptor_index/
+*_colbert_index/
+child_docs*.json
+tour_colbert_index/
