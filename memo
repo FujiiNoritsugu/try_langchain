@@ -1,0 +1,10 @@
+【マルチクエリ】
+python rag_advanced_techniques.py --technique multi-query "サイクリングに行きたいです。"
+python rag_advanced_techniques.py --technique multi-query "森を見たいです。"
+
+【RAGFusion】
+python rag_advanced_techniques.py --technique rag-fusion "森を散歩したいです。"
+python rag_advanced_techniques.py --technique rag-fusion "サイクリングしたい"
+
+python rag_advanced_techniques.py --technique hyde "おすすめの温泉は？"
+python rag_advanced_techniques.py --technique hyde "おすすめのサイクリングは？"
