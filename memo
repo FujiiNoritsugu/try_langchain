@@ -8,3 +8,12 @@ python rag_advanced_techniques.py --technique rag-fusion "サイクリングし�
 
 python rag_advanced_techniques.py --technique hyde "おすすめの温泉は？"
 python rag_advanced_techniques.py --technique hyde "おすすめのサイクリングは？"
+
+python rag_advanced_techniques.py --technique routing "おすすめのサイクリングは？"
+python rag_advanced_techniques.py --technique routing "海を散歩したいです"
+python rag_advanced_techniques.py --technique routing "森を散歩したいです"
+python rag_advanced_techniques.py --technique routing "おすすめの森への散歩は？"
+
+python rag_advanced_techniques.py --technique self-query "おすすめのサイクリングは？"
+python rag_advanced_techniques.py --technique self-query "冬におすすめのトレッキングは？"
+python rag_advanced_techniques.py --technique self-query "何か楽しいツアーは？"
