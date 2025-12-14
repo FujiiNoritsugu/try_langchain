@@ -7,12 +7,14 @@ import uuid
 from typing import TypedDict, List, Annotated
 import operator
 import os
+import json
+import asyncio
+import sys
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from langchain_voyageai import VoyageAIEmbeddings
 from langgraph.graph import StateGraph, END
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -113,8 +115,57 @@ def generate_theme(state: ThemeGenerationState) -> ThemeGenerationState:
     return state
 
 
+async def check_similarity_via_mcp(
+    candidate: str,
+    existing_texts: List[str],
+    threshold: float
+) -> dict:
+    """MCPサーバを使って類似度をチェック"""
+    # MCPサーバのパスを取得
+    server_script = os.path.join(os.path.dirname(__file__), "similarity_checker_mcp_server.py")
+
+    server_params = StdioServerParameters(
+        command=sys.executable,
+        args=[server_script],
+        env=None
+    )
+
+    try:
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                # ツールを呼び出す
+                result = await session.call_tool(
+                    "check_similarity",
+                    arguments={
+                        "candidate": candidate,
+                        "existing_texts": existing_texts,
+                        "threshold": threshold
+                    }
+                )
+
+                # 結果をパース
+                if not result.content or len(result.content) == 0:
+                    raise ValueError("MCPサーバからの応答が空です")
+
+                response_text = result.content[0].text
+                print(f"🔍 MCP応答: {response_text}")
+
+                if not response_text:
+                    raise ValueError("MCPサーバからの応答テキストが空です")
+
+                return json.loads(response_text)
+    except Exception as e:
+        print(f"❌ MCPサーバとの通信エラー: {e}")
+        print(f"   エラータイプ: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
 def check_similarity(state: ThemeGenerationState) -> ThemeGenerationState:
-    """既存テーマとの類似度をチェック"""
+    """MCPサーバを使って既存テーマとの類似度をチェック"""
     if not state["existing_themes"]:
         # 既存テーマがない場合はユニーク
         state["is_unique"] = True
@@ -122,29 +173,29 @@ def check_similarity(state: ThemeGenerationState) -> ThemeGenerationState:
         print("✅ 既存テーマがないため、ユニークと判定")
         return state
 
-    embeddings = VoyageAIEmbeddings(model="voyage-3-lite")
+    # MCPサーバを使って類似度をチェック
+    result = asyncio.run(
+        check_similarity_via_mcp(
+            candidate=state["candidate_theme"],
+            existing_texts=state["existing_themes"],
+            threshold=state["similarity_threshold"]
+        )
+    )
 
-    # 候補テーマと既存テーマの埋め込みを取得
-    candidate_embedding = embeddings.embed_query(state["candidate_theme"])
-    existing_embeddings = embeddings.embed_documents(state["existing_themes"])
-
-    # コサイン類似度を計算
-    candidate_vector = np.array(candidate_embedding).reshape(1, -1)
-    existing_vectors = np.array(existing_embeddings)
-
-    similarities = cosine_similarity(candidate_vector, existing_vectors)[0]
-    max_similarity = float(np.max(similarities))
+    max_similarity = result["max_similarity"]
+    is_unique = result["is_unique"]
+    most_similar_text = result.get("most_similar_text")
 
     state["max_similarity"] = max_similarity
-    state["is_unique"] = max_similarity < state["similarity_threshold"]
+    state["is_unique"] = is_unique
 
-    print(f"📊 最大類似度: {max_similarity:.4f} (閾値: {state['similarity_threshold']})")
+    print(f"📊 MCPサーバによる類似度分析:")
+    print(f"   最大類似度: {max_similarity:.4f} (閾値: {state['similarity_threshold']})")
 
-    if state["is_unique"]:
+    if is_unique:
         print("✅ ユニークなテーマと判定")
     else:
-        most_similar_idx = int(np.argmax(similarities))
-        print(f"⚠️  類似テーマ検出: '{state['existing_themes'][most_similar_idx]}' (類似度: {max_similarity:.4f})")
+        print(f"⚠️  類似テーマ検出: '{most_similar_text}' (類似度: {max_similarity:.4f})")
 
     return state
 
