@@ -2,6 +2,7 @@
 LangGraphを使用してデータベースに登録されたテーマ名と類似しないテーマ名を生成するプログラム
 Anthropic Claude APIを使用
 """
+
 import sqlite3
 import uuid
 from typing import TypedDict, List, Annotated
@@ -26,12 +27,14 @@ def init_database(db_path: str = "themes.db"):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS themes (
             id TEXT PRIMARY KEY,
             theme_name TEXT NOT NULL
         )
-    """)
+    """
+    )
 
     conn.commit()
     conn.close()
@@ -43,7 +46,9 @@ def add_theme_to_db(theme_name: str, db_path: str = "themes.db"):
     cursor = conn.cursor()
 
     theme_id = str(uuid.uuid4())
-    cursor.execute("INSERT INTO themes (id, theme_name) VALUES (?, ?)", (theme_id, theme_name))
+    cursor.execute(
+        "INSERT INTO themes (id, theme_name) VALUES (?, ?)", (theme_id, theme_name)
+    )
 
     conn.commit()
     conn.close()
@@ -65,6 +70,7 @@ def get_all_themes(db_path: str = "themes.db") -> List[str]:
 # LangGraphの状態定義
 class ThemeGenerationState(TypedDict):
     """テーマ生成プロセスの状態"""
+
     existing_themes: List[str]  # 既存のテーマ一覧
     candidate_theme: str  # 生成候補のテーマ
     is_unique: bool  # ユニークかどうか
@@ -92,7 +98,9 @@ def generate_theme(state: ThemeGenerationState) -> ThemeGenerationState:
 
     llm = ChatAnthropic(model="claude-3-haiku-20240307", temperature=0.9)
 
-    existing_themes_str = "\n".join([f"- {theme}" for theme in state["existing_themes"]])
+    existing_themes_str = "\n".join(
+        [f"- {theme}" for theme in state["existing_themes"]]
+    )
 
     prompt = f"""以下の既存のテーマとは異なる、ユニークで創造的なテーマを1つ生成してください。
 
@@ -116,18 +124,16 @@ def generate_theme(state: ThemeGenerationState) -> ThemeGenerationState:
 
 
 async def check_similarity_via_mcp(
-    candidate: str,
-    existing_texts: List[str],
-    threshold: float
+    candidate: str, existing_texts: List[str], threshold: float
 ) -> dict:
     """MCPサーバを使って類似度をチェック"""
     # MCPサーバのパスを取得
-    server_script = os.path.join(os.path.dirname(__file__), "similarity_checker_mcp_server.py")
+    server_script = os.path.join(
+        os.path.dirname(__file__), "similarity_checker_mcp_server.py"
+    )
 
     server_params = StdioServerParameters(
-        command=sys.executable,
-        args=[server_script],
-        env=None
+        command=sys.executable, args=[server_script], env=None
     )
 
     try:
@@ -141,8 +147,8 @@ async def check_similarity_via_mcp(
                     arguments={
                         "candidate": candidate,
                         "existing_texts": existing_texts,
-                        "threshold": threshold
-                    }
+                        "threshold": threshold,
+                    },
                 )
 
                 # 結果をパース
@@ -160,6 +166,7 @@ async def check_similarity_via_mcp(
         print(f"❌ MCPサーバとの通信エラー: {e}")
         print(f"   エラータイプ: {type(e).__name__}")
         import traceback
+
         traceback.print_exc()
         raise
 
@@ -178,7 +185,7 @@ def check_similarity(state: ThemeGenerationState) -> ThemeGenerationState:
         check_similarity_via_mcp(
             candidate=state["candidate_theme"],
             existing_texts=state["existing_themes"],
-            threshold=state["similarity_threshold"]
+            threshold=state["similarity_threshold"],
         )
     )
 
@@ -190,12 +197,16 @@ def check_similarity(state: ThemeGenerationState) -> ThemeGenerationState:
     state["is_unique"] = is_unique
 
     print(f"📊 MCPサーバによる類似度分析:")
-    print(f"   最大類似度: {max_similarity:.4f} (閾値: {state['similarity_threshold']})")
+    print(
+        f"   最大類似度: {max_similarity:.4f} (閾値: {state['similarity_threshold']})"
+    )
 
     if is_unique:
         print("✅ ユニークなテーマと判定")
     else:
-        print(f"⚠️  類似テーマ検出: '{most_similar_text}' (類似度: {max_similarity:.4f})")
+        print(
+            f"⚠️  類似テーマ検出: '{most_similar_text}' (類似度: {max_similarity:.4f})"
+        )
 
     return state
 
@@ -216,7 +227,9 @@ def finalize(state: ThemeGenerationState) -> ThemeGenerationState:
     if state["is_unique"]:
         print(f"\n🎉 ユニークなテーマが生成されました: '{state['candidate_theme']}'")
     else:
-        print(f"\n⚠️  完全にユニークなテーマは生成できませんでしたが、最善の候補: '{state['candidate_theme']}'")
+        print(
+            f"\n⚠️  完全にユニークなテーマは生成できませんでしたが、最善の候補: '{state['candidate_theme']}'"
+        )
     return state
 
 
@@ -240,11 +253,7 @@ def create_theme_generator_graph():
     workflow.add_conditional_edges(
         "check_similarity",
         should_regenerate,
-        {
-            "unique": "finalize",
-            "max_attempts": "finalize",
-            "regenerate": "generate"
-        }
+        {"unique": "finalize", "max_attempts": "finalize", "regenerate": "generate"},
     )
 
     workflow.add_edge("finalize", END)
@@ -257,7 +266,7 @@ def generate_unique_theme(
     similarity_threshold: float = 0.7,
     max_attempts: int = 5,
     db_path: str = "themes.db",
-    save_to_db: bool = False
+    save_to_db: bool = False,
 ) -> dict:
     """
     ユニークなテーマを生成
@@ -288,7 +297,7 @@ def generate_unique_theme(
         "similarity_threshold": similarity_threshold,
         "max_similarity": 0.0,
         "db_path": db_path,
-        "category": category
+        "category": category,
     }
 
     # グラフの実行
@@ -303,7 +312,7 @@ def generate_unique_theme(
         "theme": result["candidate_theme"],
         "is_unique": result["is_unique"],
         "max_similarity": result["max_similarity"],
-        "attempts": result["attempt_count"]
+        "attempts": result["attempt_count"],
     }
 
 
@@ -311,6 +320,42 @@ if __name__ == "__main__":
     # 使用例
     print("=" * 60)
     print("LangGraph テーマ生成システム")
+    print("=" * 60)
+
+    # グラフの可視化
+    print("\n📊 グラフ構造を可視化します...\n")
+    app = create_theme_generator_graph()
+
+    # ASCII図で表示
+    # print("=== グラフ構造 (ASCII) ===")
+    # print(app.get_graph().draw_ascii())
+    # print()
+
+    # Mermaid記法で表示とファイル保存
+    print("=== グラフ構造 (Mermaid) ===")
+    mermaid_code = app.get_graph().draw_mermaid()
+    print(mermaid_code)
+    print()
+
+    # Mermaidファイルとして保存
+    mermaid_filename = "theme_generator_graph.md"
+    with open(mermaid_filename, "w", encoding="utf-8") as f:
+        f.write("# テーマ生成グラフ構造\n\n")
+        f.write("```mermaid\n")
+        f.write(mermaid_code)
+        f.write("\n```\n")
+    print(f"✅ Mermaidグラフを {mermaid_filename} に保存しました")
+    print()
+
+    # PNG画像として保存（要: pip install pygraphviz または graphviz）
+    # try:
+    #     png_data = app.get_graph().draw_mermaid_png()
+    #     with open("theme_generator_graph.png", "wb") as f:
+    #         f.write(png_data)
+    #     print("✅ グラフ画像を theme_generator_graph.png に保存しました")
+    # except Exception as e:
+    #     print(f"⚠️  PNG生成エラー: {e}")
+
     print("=" * 60)
 
     # サンプルテーマをデータベースに追加（初回のみ）
@@ -324,7 +369,7 @@ if __name__ == "__main__":
             "宇宙探検の冒険",
             "AI と人間の共生",
             "持続可能な社会",
-            "デジタルアートの革新"
+            "デジタルアートの革新",
         ]
         for theme in sample_themes:
             add_theme_to_db(theme)
@@ -336,7 +381,7 @@ if __name__ == "__main__":
         category="テクノロジーと社会",
         similarity_threshold=0.7,
         max_attempts=5,
-        save_to_db=True
+        save_to_db=True,
     )
 
     print("\n" + "=" * 60)
