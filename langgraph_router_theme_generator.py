@@ -216,7 +216,6 @@ def process_technology(state: RouterThemeState) -> RouterThemeState:
         result = asyncio.run(
             check_similarity_via_mcp(
                 candidate=state["candidate_theme"],
-                existing_texts=state["existing_themes"],
                 threshold=state["similarity_threshold"],
             )
         )
@@ -277,7 +276,6 @@ def process_art(state: RouterThemeState) -> RouterThemeState:
         result = asyncio.run(
             check_similarity_via_mcp(
                 candidate=state["candidate_theme"],
-                existing_texts=state["existing_themes"],
                 threshold=state["similarity_threshold"],
             )
         )
@@ -338,7 +336,6 @@ def process_business(state: RouterThemeState) -> RouterThemeState:
         result = asyncio.run(
             check_similarity_via_mcp(
                 candidate=state["candidate_theme"],
-                existing_texts=state["existing_themes"],
                 threshold=state["similarity_threshold"],
             )
         )
@@ -399,7 +396,6 @@ def process_nature(state: RouterThemeState) -> RouterThemeState:
         result = asyncio.run(
             check_similarity_via_mcp(
                 candidate=state["candidate_theme"],
-                existing_texts=state["existing_themes"],
                 threshold=state["similarity_threshold"],
             )
         )
@@ -460,7 +456,6 @@ def process_lifestyle(state: RouterThemeState) -> RouterThemeState:
         result = asyncio.run(
             check_similarity_via_mcp(
                 candidate=state["candidate_theme"],
-                existing_texts=state["existing_themes"],
                 threshold=state["similarity_threshold"],
             )
         )
@@ -480,15 +475,16 @@ def process_lifestyle(state: RouterThemeState) -> RouterThemeState:
 
 
 async def check_similarity_via_mcp(
-    candidate: str, existing_texts: List[str], threshold: float
+    candidate: str, threshold: float
 ) -> dict:
-    """MCPサーバを使って類似度をチェック"""
+    """MCPサーバを使って類似度をチェック（既存テーマはベクトルDBから取得）"""
     server_script = os.path.join(
         os.path.dirname(__file__), "similarity_checker_mcp_server.py"
     )
 
+    # 環境変数を引き継ぐ
     server_params = StdioServerParameters(
-        command=sys.executable, args=[server_script], env=None
+        command=sys.executable, args=[server_script], env=os.environ.copy()
     )
 
     try:
@@ -500,7 +496,6 @@ async def check_similarity_via_mcp(
                     "check_similarity",
                     arguments={
                         "candidate": candidate,
-                        "existing_texts": existing_texts,
                         "threshold": threshold,
                     },
                 )

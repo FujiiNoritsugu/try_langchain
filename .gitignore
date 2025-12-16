@@ -17,3 +17,9 @@ raptor_index/
 *_colbert_index/
 child_docs*.json
 tour_colbert_index/
+
+# Chroma vector database
+chroma_db/
+
+# SQLite databases
+*.db
