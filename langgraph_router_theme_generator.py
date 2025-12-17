@@ -474,6 +474,38 @@ def process_lifestyle(state: RouterThemeState) -> RouterThemeState:
     return state
 
 
+async def add_theme_to_vector_store(theme: str) -> dict:
+    """MCPサーバを使ってChromaベクトルストアに新しいテーマを追加"""
+    server_script = os.path.join(
+        os.path.dirname(__file__), "similarity_checker_mcp_server.py"
+    )
+
+    # 環境変数を引き継ぐ
+    server_params = StdioServerParameters(
+        command=sys.executable, args=[server_script], env=os.environ.copy()
+    )
+
+    try:
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                result = await session.call_tool(
+                    "add_theme",
+                    arguments={"theme": theme},
+                )
+
+                if not result.content or len(result.content) == 0:
+                    raise ValueError("MCPサーバからの応答が空です")
+
+                response_text = result.content[0].text
+                return json.loads(response_text)
+
+    except Exception as e:
+        print(f"❌ ベクトルストアへの追加エラー: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def check_similarity_via_mcp(
     candidate: str, threshold: float
 ) -> dict:
@@ -532,6 +564,16 @@ def finalize(state: RouterThemeState) -> RouterThemeState:
             save_msg = f"💾 [{state['category_name']}] データベースに保存しました (ID: {theme_id})"
             print(save_msg)
             message += f"\n{save_msg}"
+
+            # Chromaベクトルストアにも追加
+            vector_result = asyncio.run(add_theme_to_vector_store(state["candidate_theme"]))
+            if vector_result.get("success"):
+                vector_msg = f"🔍 ベクトルストアに追加しました"
+                print(vector_msg)
+                message += f"\n{vector_msg}"
+            else:
+                error_msg = f"⚠️  ベクトルストアへの追加に失敗: {vector_result.get('error')}"
+                print(error_msg)
     else:
         message = f"⚠️  完全にユニークなテーマは生成できませんでしたが、最善の候補: '{state['candidate_theme']}'"
         print(message)

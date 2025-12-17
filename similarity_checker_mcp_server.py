@@ -113,6 +113,20 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["candidate"]
             }
+        ),
+        Tool(
+            name="add_theme",
+            description="新しいテーマをChromaベクトルストアに追加します",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "theme": {
+                        "type": "string",
+                        "description": "追加するテーマ名"
+                    }
+                },
+                "required": ["theme"]
+            }
         )
     ]
 
@@ -125,74 +139,94 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         print(f"[MCP Server] ツール呼び出し: {name}", file=sys.stderr)
         print(f"[MCP Server] 引数: {arguments}", file=sys.stderr)
 
-        if name != "check_similarity":
-            raise ValueError(f"Unknown tool: {name}")
-
         # ベクトルストアが初期化されていない場合は初期化
         if vector_store is None:
             initialize_vector_store()
 
-        candidate = arguments["candidate"]
-        threshold = arguments.get("threshold", 0.7)
+        if name == "add_theme":
+            # 新しいテーマをベクトルストアに追加
+            theme = arguments["theme"]
+            print(f"[MCP Server] テーマを追加: {theme}", file=sys.stderr)
 
-        print(f"[MCP Server] 候補: {candidate}", file=sys.stderr)
+            vector_store.add_texts(
+                texts=[theme],
+                metadatas=[{"theme_name": theme}]
+            )
 
-        # Chromaに保存されているドキュメント数を確認
-        doc_count = vector_store._collection.count()
-        print(f"[MCP Server] ベクトルストア内のドキュメント数: {doc_count}", file=sys.stderr)
-
-        # 既存テーマがない場合
-        if doc_count == 0:
             result = {
-                "max_similarity": 0.0,
-                "most_similar_text": None,
-                "is_unique": True,
-                "message": "既存テーマがないため、ユニークと判定"
+                "success": True,
+                "theme": theme,
+                "message": f"テーマ '{theme}' をベクトルストアに追加しました"
             }
-            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+            result_json = json.dumps(result, ensure_ascii=False)
+            print(f"[MCP Server] 結果: {result_json}", file=sys.stderr)
+            return [TextContent(type="text", text=result_json)]
 
-        # 類似度検索を実行（k=1で最も類似したものを取得、score付き）
-        print(f"[MCP Server] 類似度検索を実行中...", file=sys.stderr)
-        results = vector_store.similarity_search_with_score(candidate, k=1)
-        print(f"[MCP Server] 検索完了", file=sys.stderr)
+        elif name == "check_similarity":
+            candidate = arguments["candidate"]
+            threshold = arguments.get("threshold", 0.7)
 
-        if results:
-            doc, score = results[0]
-            most_similar_text = doc.page_content
-            # Chromaのスコアは距離（小さいほど類似）なので、類似度に変換
-            # L2距離をコサイン類似度に変換（近似）
-            # スコアが小さいほど類似なので、1 - normalized_score を使用
-            # ただし、Chromaのスコアは実装依存なので、そのまま使用
-            # 正確なコサイン類似度を取得するため、手動で計算
-            from sklearn.metrics.pairwise import cosine_similarity
-            import numpy as np
+            print(f"[MCP Server] 候補: {candidate}", file=sys.stderr)
 
-            candidate_embedding = embeddings.embed_query(candidate)
-            similar_embedding = embeddings.embed_query(most_similar_text)
+            # Chromaに保存されているドキュメント数を確認
+            doc_count = vector_store._collection.count()
+            print(f"[MCP Server] ベクトルストア内のドキュメント数: {doc_count}", file=sys.stderr)
 
-            candidate_vector = np.array(candidate_embedding).reshape(1, -1)
-            similar_vector = np.array(similar_embedding).reshape(1, -1)
+            # 既存テーマがない場合
+            if doc_count == 0:
+                result = {
+                    "max_similarity": 0.0,
+                    "most_similar_text": None,
+                    "is_unique": True,
+                    "message": "既存テーマがないため、ユニークと判定"
+                }
+                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
-            max_similarity = float(cosine_similarity(candidate_vector, similar_vector)[0][0])
+            # 類似度検索を実行（k=1で最も類似したものを取得、score付き）
+            print(f"[MCP Server] 類似度検索を実行中...", file=sys.stderr)
+            results = vector_store.similarity_search_with_score(candidate, k=1)
+            print(f"[MCP Server] 検索完了", file=sys.stderr)
 
-            # 結果を返す
-            result = {
-                "max_similarity": max_similarity,
-                "most_similar_text": most_similar_text,
-                "is_unique": max_similarity < threshold,
-                "threshold": threshold
-            }
+            if results:
+                doc, score = results[0]
+                most_similar_text = doc.page_content
+                # Chromaのスコアは距離（小さいほど類似）なので、類似度に変換
+                # L2距離をコサイン類似度に変換（近似）
+                # スコアが小さいほど類似なので、1 - normalized_score を使用
+                # ただし、Chromaのスコアは実装依存なので、そのまま使用
+                # 正確なコサイン類似度を取得するため、手動で計算
+                from sklearn.metrics.pairwise import cosine_similarity
+                import numpy as np
+
+                candidate_embedding = embeddings.embed_query(candidate)
+                similar_embedding = embeddings.embed_query(most_similar_text)
+
+                candidate_vector = np.array(candidate_embedding).reshape(1, -1)
+                similar_vector = np.array(similar_embedding).reshape(1, -1)
+
+                max_similarity = float(cosine_similarity(candidate_vector, similar_vector)[0][0])
+
+                # 結果を返す
+                result = {
+                    "max_similarity": max_similarity,
+                    "most_similar_text": most_similar_text,
+                    "is_unique": max_similarity < threshold,
+                    "threshold": threshold
+                }
+            else:
+                result = {
+                    "max_similarity": 0.0,
+                    "most_similar_text": None,
+                    "is_unique": True,
+                    "message": "類似テーマが見つかりませんでした"
+                }
+
+            result_json = json.dumps(result, ensure_ascii=False)
+            print(f"[MCP Server] 結果: {result_json}", file=sys.stderr)
+            return [TextContent(type="text", text=result_json)]
+
         else:
-            result = {
-                "max_similarity": 0.0,
-                "most_similar_text": None,
-                "is_unique": True,
-                "message": "類似テーマが見つかりませんでした"
-            }
-
-        result_json = json.dumps(result, ensure_ascii=False)
-        print(f"[MCP Server] 結果: {result_json}", file=sys.stderr)
-        return [TextContent(type="text", text=result_json)]
+            raise ValueError(f"Unknown tool: {name}")
 
     except Exception as e:
         import sys
