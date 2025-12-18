@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -128,11 +128,12 @@ async def add_theme_to_vector_store(theme: str) -> dict:
 
 # ===== エージェント用ツール定義 =====
 @tool
-def generate_theme(category: str) -> str:
+def generate_theme(category: str, improvement_feedback: str = "") -> str:
     """指定されたカテゴリに基づいて新しいテーマを生成します。
 
     Args:
         category: テーマのカテゴリ (technology, nature, lifestyle)
+        improvement_feedback: リフレクションからの改善フィードバック（オプション）
 
     Returns:
         生成されたテーマ名
@@ -149,13 +150,26 @@ def generate_theme(category: str) -> str:
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.9)
 
+    base_instruction = category_prompts[category]
+
+    # フィードバックがある場合は改善を促す
+    if improvement_feedback:
+        base_instruction += f"\n\n前回の評価フィードバック: {improvement_feedback}\n上記のフィードバックを踏まえて、より良いテーマを生成してください。"
+        print(f"💡 改善フィードバックを適用して再生成します")
+
     messages = [
         SystemMessage(
             content="""あなたはクリエイティブなテーマ生成の専門家です。
 簡潔で魅力的なテーマ名のみを生成してください。
-説明や追加コメントは不要です。テーマ名だけを返してください。"""
+説明や追加コメントは不要です。テーマ名だけを返してください。
+
+重要な基準：
+- 魅力度: 人々の興味を引く
+- 独創性: 新鮮でありふれていない
+- カテゴリ適合性: カテゴリとの関連が明確
+- 明確性: 意味が分かりやすく具体的"""
         ),
-        HumanMessage(content=category_prompts[category]),
+        HumanMessage(content=base_instruction),
     ]
 
     response = llm.invoke(messages)
@@ -185,6 +199,105 @@ def check_theme_similarity(theme: str, threshold: float = 0.7) -> str:
     print(f"🔍 類似度チェック結果: is_unique={is_unique}, max_similarity={max_similarity:.3f}")
 
     return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+def review_theme(theme: str, category: str) -> str:
+    """生成されたテーマの品質を多角的に評価します。
+
+    Args:
+        theme: 評価するテーマ名
+        category: テーマのカテゴリ
+
+    Returns:
+        評価結果（JSON文字列）
+    """
+    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+
+    # カテゴリごとの評価基準
+    category_criteria = {
+        "technology": "最新技術やIT分野との関連性",
+        "nature": "自然や環境との関連性",
+        "lifestyle": "ライフスタイルや日常生活との関連性",
+    }
+
+    evaluation_prompt = f"""以下のテーマを厳格に評価してください：
+
+テーマ: {theme}
+カテゴリ: {category}
+
+以下の4つの観点から1-10点で評価し、具体的なフィードバックを提供してください：
+
+1. **魅力度** (1-10点): テーマが人々の興味を引くか、議論したくなるか
+2. **独創性** (1-10点): アイデアが新鮮で、ありふれていないか
+3. **カテゴリ適合性** (1-10点): {category_criteria.get(category, "カテゴリ")}が明確か
+4. **明確性** (1-10点): テーマの意味が分かりやすく、具体的か
+
+JSON形式で以下のように回答してください：
+{{
+    "scores": {{
+        "attractiveness": <1-10の整数>,
+        "originality": <1-10の整数>,
+        "category_fit": <1-10の整数>,
+        "clarity": <1-10の整数>
+    }},
+    "total_score": <4項目の平均点（小数点1桁）>,
+    "feedback": "<具体的な評価コメント>",
+    "improvement_suggestions": "<改善案（スコアが7.0未満の場合）>",
+    "approved": <true/false: total_scoreが7.0以上ならtrue>
+}}
+
+重要：必ずJSONのみを返してください。他の文章は不要です。"""
+
+    messages = [
+        SystemMessage(
+            content="あなたはテーマの品質を厳格に評価する批評家です。高い基準を持ち、具体的で建設的なフィードバックを提供します。"
+        ),
+        HumanMessage(content=evaluation_prompt),
+    ]
+
+    response = llm.invoke(messages)
+    result_text = response.content.strip()
+
+    # JSONブロックを抽出（```json ... ``` の場合に対応）
+    if "```json" in result_text:
+        import re
+        json_match = re.search(r"```json\s*(.*?)\s*```", result_text, re.DOTALL)
+        if json_match:
+            result_text = json_match.group(1).strip()
+    elif "```" in result_text:
+        import re
+        json_match = re.search(r"```\s*(.*?)\s*```", result_text, re.DOTALL)
+        if json_match:
+            result_text = json_match.group(1).strip()
+
+    # JSONとして解析
+    try:
+        result = json.loads(result_text)
+        total_score = result.get("total_score", 0)
+        approved = result.get("approved", False)
+
+        print(f"📊 品質評価: {total_score:.1f}/10.0 - {'✅ 承認' if approved else '❌ 要改善'}")
+        print(f"   魅力度: {result['scores']['attractiveness']}/10")
+        print(f"   独創性: {result['scores']['originality']}/10")
+        print(f"   適合性: {result['scores']['category_fit']}/10")
+        print(f"   明確性: {result['scores']['clarity']}/10")
+
+        return json.dumps(result, ensure_ascii=False)
+
+    except json.JSONDecodeError as e:
+        print(f"⚠️ 評価結果のパースに失敗: {e}")
+        # フォールバック
+        return json.dumps(
+            {
+                "scores": {"attractiveness": 5, "originality": 5, "category_fit": 5, "clarity": 5},
+                "total_score": 5.0,
+                "feedback": "評価の解析に失敗しました",
+                "improvement_suggestions": "",
+                "approved": False,
+            },
+            ensure_ascii=False,
+        )
 
 
 @tool
@@ -224,13 +337,13 @@ def save_theme(theme: str, category: str) -> str:
 def create_theme_agent():
     """テーマ生成エージェントを作成"""
     # ツールのリスト
-    tools = [generate_theme, check_theme_similarity, save_theme]
+    tools = [generate_theme, review_theme, check_theme_similarity, save_theme]
 
     # LLMの設定
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
     # ReActエージェントの作成
-    agent = create_react_agent(llm, tools)
+    agent = create_agent(llm, tools)
 
     return agent
 
@@ -238,9 +351,9 @@ def create_theme_agent():
 # ===== メイン実行 =====
 def main():
     """エージェントを使ってテーマを生成"""
-    print("=" * 60)
-    print("LangGraph エージェントアーキテクチャ テーマ生成システム")
-    print("=" * 60)
+    print("=" * 70)
+    print("LangGraph エージェント + リフレクション テーマ生成システム")
+    print("=" * 70)
 
     # カテゴリを選択
     category = input("\nカテゴリを選択してください (technology/nature/lifestyle): ").strip().lower()
@@ -253,17 +366,32 @@ def main():
     agent = create_theme_agent()
 
     # エージェントに指示
-    system_prompt = f"""あなたはテーマ生成の専門家エージェントです。
+    system_prompt = f"""あなたはテーマ生成の専門家エージェントです。リフレクション（自己評価と改善）を活用して高品質なテーマを生成してください。
 
 以下のタスクを実行してください：
 
+【フェーズ1: 生成とリフレクション】
 1. カテゴリ「{category}」のテーマを generate_theme ツールで生成
-2. 生成したテーマの類似度を check_theme_similarity ツールでチェック（閾値: 0.7）
-3. ユニーク（is_unique=true）であれば、save_theme ツールで保存
-4. ユニークでなければ、最大3回まで再生成を試みる
-5. 最終結果を報告
+2. 生成したテーマを review_theme ツールで品質評価
+   - 評価結果の "approved" が true なら次のフェーズへ
+   - false なら "improvement_suggestions" を参考に最大3回まで再生成
+   - 3回試しても approved=true にならない場合は、最も高スコアのテーマを採用
 
-必ず上記の手順に従い、ツールを適切に使用してください。"""
+【フェーズ2: 類似度チェック】
+3. 承認されたテーマの類似度を check_theme_similarity ツールでチェック（閾値: 0.7）
+   - ユニーク（is_unique=true）ならフェーズ3へ
+   - 重複（is_unique=false）ならフェーズ1に戻る（最大3回）
+
+【フェーズ3: 保存】
+4. save_theme ツールでテーマを保存
+
+【最終報告】
+5. 生成プロセス（試行回数、リフレクション結果）と最終テーマを報告
+
+重要：
+- review_theme の評価基準（魅力度、独創性、適合性、明確性）を理解し、フィードバックを活用すること
+- 改善提案に基づいて具体的に改良すること
+- 必ず上記の手順に従い、ツールを適切に使用してください"""
 
     # エージェントを実行
     print("\n🤖 エージェントを起動しています...\n")
