@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-LangGraphエージェントアーキテクチャによるテーマ生成システム
+LangGraphマルチエージェントアーキテクチャによるテーマ生成システム
 
-ルーターアーキテクチャとの違い：
-- ルーター：明示的な条件分岐でフローを制御
-- エージェント：LLMが自律的にツールを選択・実行（ReActパターン）
+スーパーバイザーアーキテクチャ：
+- Supervisor: 全体のワークフローを管理し、専門エージェントに作業を委譲
+- Generator Agent: テーマ生成専門（サブグラフ）
+- Reviewer Agent: 品質評価・リフレクション専門（サブグラフ）
+- Validator Agent: 類似度チェック専門（サブグラフ）
+- Persistence Agent: DB/ベクトルストア保存専門（サブグラフ）
 """
 import asyncio
 import json
@@ -12,13 +15,13 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph, add_messages
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -31,6 +34,22 @@ CATEGORY_DB_PATHS = {
     "nature": Path(__file__).parent / "themes_nature.db",
     "lifestyle": Path(__file__).parent / "themes_lifestyle.db",
 }
+
+
+# ===== 共有状態の定義 =====
+class AgentState(TypedDict):
+    """全エージェントで共有される状態"""
+    messages: Annotated[list[BaseMessage], add_messages]  # メッセージ履歴
+    category: str  # テーマのカテゴリ
+    current_theme: str  # 現在のテーマ候補
+    review_result: dict  # 品質評価結果
+    similarity_result: dict  # 類似度チェック結果
+    generation_attempts: int  # 生成試行回数
+    validation_attempts: int  # 類似度チェック試行回数
+    next_agent: str  # 次に実行するエージェント名
+    improvement_feedback: str  # 改善フィードバック
+    final_theme: str  # 最終的に採用されたテーマ
+    is_complete: bool  # 処理が完了したか
 
 
 # ===== データベース操作関数 =====
@@ -126,8 +145,7 @@ async def add_theme_to_vector_store(theme: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-# ===== エージェント用ツール定義 =====
-@tool
+# ===== ヘルパー関数（各エージェントから呼び出される） =====
 def generate_theme(category: str, improvement_feedback: str = "") -> str:
     """指定されたカテゴリに基づいて新しいテーマを生成します。
 
@@ -179,8 +197,7 @@ def generate_theme(category: str, improvement_feedback: str = "") -> str:
     return theme
 
 
-@tool
-def check_theme_similarity(theme: str, threshold: float = 0.7) -> str:
+def check_theme_similarity(theme: str, threshold: float = 0.7) -> dict:
     """生成されたテーマの類似度をチェックします。
 
     Args:
@@ -188,7 +205,7 @@ def check_theme_similarity(theme: str, threshold: float = 0.7) -> str:
         threshold: 類似度の閾値（デフォルト: 0.7）
 
     Returns:
-        類似度チェックの結果（JSON文字列）
+        類似度チェックの結果（dict）
     """
     result = asyncio.run(check_similarity_via_mcp(theme, threshold))
 
@@ -198,11 +215,10 @@ def check_theme_similarity(theme: str, threshold: float = 0.7) -> str:
 
     print(f"🔍 類似度チェック結果: is_unique={is_unique}, max_similarity={max_similarity:.3f}")
 
-    return json.dumps(result, ensure_ascii=False)
+    return result
 
 
-@tool
-def review_theme(theme: str, category: str) -> str:
+def review_theme(theme: str, category: str) -> dict:
     """生成されたテーマの品質を多角的に評価します。
 
     Args:
@@ -210,7 +226,7 @@ def review_theme(theme: str, category: str) -> str:
         category: テーマのカテゴリ
 
     Returns:
-        評価結果（JSON文字列）
+        評価結果（dict）
     """
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
@@ -283,24 +299,20 @@ JSON形式で以下のように回答してください：
         print(f"   適合性: {result['scores']['category_fit']}/10")
         print(f"   明確性: {result['scores']['clarity']}/10")
 
-        return json.dumps(result, ensure_ascii=False)
+        return result
 
     except json.JSONDecodeError as e:
         print(f"⚠️ 評価結果のパースに失敗: {e}")
         # フォールバック
-        return json.dumps(
-            {
-                "scores": {"attractiveness": 5, "originality": 5, "category_fit": 5, "clarity": 5},
-                "total_score": 5.0,
-                "feedback": "評価の解析に失敗しました",
-                "improvement_suggestions": "",
-                "approved": False,
-            },
-            ensure_ascii=False,
-        )
+        return {
+            "scores": {"attractiveness": 5, "originality": 5, "category_fit": 5, "clarity": 5},
+            "total_score": 5.0,
+            "feedback": "評価の解析に失敗しました",
+            "improvement_suggestions": "",
+            "approved": False,
+        }
 
 
-@tool
 def save_theme(theme: str, category: str) -> str:
     """テーマをデータベースとベクトルストアに保存します。
 
@@ -333,26 +345,152 @@ def save_theme(theme: str, category: str) -> str:
         return f"{db_msg}\n{error_msg}"
 
 
-# ===== エージェントの作成 =====
-def create_theme_agent():
-    """テーマ生成エージェントを作成"""
-    # ツールのリスト
-    tools = [generate_theme, review_theme, check_theme_similarity, save_theme]
+# ===== 各専門エージェント（サブグラフ）の実装 =====
 
-    # LLMの設定
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+# 1. Generator Agent - テーマ生成専門
+def generator_agent(state: AgentState) -> AgentState:
+    """テーマを生成するエージェント"""
+    print(f"\n🎨 Generator Agent: テーマを生成します（試行 {state['generation_attempts'] + 1}回目）")
 
-    # ReActエージェントの作成
-    agent = create_agent(llm, tools)
+    theme = generate_theme(state["category"], state.get("improvement_feedback", ""))
 
-    return agent
+    return {
+        **state,
+        "current_theme": theme,
+        "generation_attempts": state["generation_attempts"] + 1,
+        "next_agent": "reviewer",
+    }
+
+
+# 2. Reviewer Agent - 品質評価専門
+def reviewer_agent(state: AgentState) -> AgentState:
+    """テーマの品質を評価するエージェント"""
+    print(f"\n📊 Reviewer Agent: テーマを評価します")
+
+    review_result = review_theme(state["current_theme"], state["category"])
+
+    approved = review_result.get("approved", False)
+    improvement_suggestions = review_result.get("improvement_suggestions", "")
+
+    # 承認されたか、または最大試行回数に達した場合は次へ
+    if approved or state["generation_attempts"] >= 3:
+        if state["generation_attempts"] >= 3 and not approved:
+            print("⚠️ 最大試行回数に達しました。現在のテーマを採用します。")
+        next_agent = "validator"
+        improvement_feedback = ""
+    else:
+        # 不承認の場合は再生成
+        next_agent = "generator"
+        improvement_feedback = improvement_suggestions
+
+    return {
+        **state,
+        "review_result": review_result,
+        "improvement_feedback": improvement_feedback,
+        "next_agent": next_agent,
+    }
+
+
+# 3. Validator Agent - 類似度チェック専門
+def validator_agent(state: AgentState) -> AgentState:
+    """テーマの類似度をチェックするエージェント"""
+    print(f"\n🔍 Validator Agent: 類似度をチェックします（試行 {state['validation_attempts'] + 1}回目）")
+
+    similarity_result = check_theme_similarity(state["current_theme"], threshold=0.7)
+
+    is_unique = similarity_result.get("is_unique", False)
+
+    # ユニークか、または最大試行回数に達した場合は保存へ
+    if is_unique or state["validation_attempts"] >= 3:
+        if state["validation_attempts"] >= 3 and not is_unique:
+            print("⚠️ 最大類似度チェック試行回数に達しました。現在のテーマを採用します。")
+        next_agent = "persistence"
+    else:
+        # 重複の場合は再生成（カウンターをリセットせず継続）
+        next_agent = "generator"
+
+    return {
+        **state,
+        "similarity_result": similarity_result,
+        "validation_attempts": state["validation_attempts"] + 1,
+        "next_agent": next_agent,
+    }
+
+
+# 4. Persistence Agent - 保存専門
+def persistence_agent(state: AgentState) -> AgentState:
+    """テーマを保存するエージェント"""
+    print(f"\n💾 Persistence Agent: テーマを保存します")
+
+    result = save_theme(state["current_theme"], state["category"])
+
+    return {
+        **state,
+        "final_theme": state["current_theme"],
+        "is_complete": True,
+        "next_agent": "__end__",  # END定数の値
+    }
+
+
+# 5. Supervisor - 全体を管理するスーパーバイザー
+def supervisor_node(state: AgentState) -> AgentState:
+    """ワークフロー全体を管理するスーパーバイザー"""
+    # 次のエージェントを決定（すでに各エージェントが設定している）
+    print(f"\n👔 Supervisor: 次のエージェントは '{state['next_agent']}' です")
+    return state
+
+
+# ===== ルーティング関数 =====
+def route_to_next_agent(state: AgentState) -> str:
+    """次のエージェントへのルーティングを決定"""
+    next_agent = state.get("next_agent", "generator")
+    return next_agent
+
+
+# ===== グラフ構築 =====
+def create_multi_agent_graph() -> StateGraph:
+    """マルチエージェントグラフを構築"""
+    # グラフの初期化
+    workflow = StateGraph(AgentState)
+
+    # ノードの追加
+    workflow.add_node("supervisor", supervisor_node)
+    workflow.add_node("generator", generator_agent)
+    workflow.add_node("reviewer", reviewer_agent)
+    workflow.add_node("validator", validator_agent)
+    workflow.add_node("persistence", persistence_agent)
+
+    # エッジの追加
+    # 開始 -> スーパーバイザー
+    workflow.set_entry_point("supervisor")
+
+    # スーパーバイザーから各エージェントへの条件分岐
+    workflow.add_conditional_edges(
+        "supervisor",
+        route_to_next_agent,
+        {
+            "generator": "generator",
+            "reviewer": "reviewer",
+            "validator": "validator",
+            "persistence": "persistence",
+            "__end__": END,  # END定数の実際の値をキーに使用
+        },
+    )
+
+    # 各エージェントからスーパーバイザーへ戻る
+    workflow.add_edge("generator", "supervisor")
+    workflow.add_edge("reviewer", "supervisor")
+    workflow.add_edge("validator", "supervisor")
+    workflow.add_edge("persistence", "supervisor")
+
+    return workflow.compile()
 
 
 # ===== メイン実行 =====
 def main():
-    """エージェントを使ってテーマを生成"""
+    """マルチエージェントシステムを使ってテーマを生成"""
     print("=" * 70)
-    print("LangGraph エージェント + リフレクション テーマ生成システム")
+    print("LangGraph マルチエージェント + スーパーバイザー テーマ生成システム")
     print("=" * 70)
 
     # カテゴリを選択
@@ -362,52 +500,53 @@ def main():
         print(f"❌ エラー: 未知のカテゴリ '{category}'")
         return
 
-    # エージェントを作成
-    agent = create_theme_agent()
+    # マルチエージェントグラフを作成
+    graph = create_multi_agent_graph()
 
-    # エージェントに指示
-    system_prompt = f"""あなたはテーマ生成の専門家エージェントです。リフレクション（自己評価と改善）を活用して高品質なテーマを生成してください。
+    # 初期状態を設定
+    initial_state: AgentState = {
+        "messages": [],
+        "category": category,
+        "current_theme": "",
+        "review_result": {},
+        "similarity_result": {},
+        "generation_attempts": 0,
+        "validation_attempts": 0,
+        "next_agent": "generator",
+        "improvement_feedback": "",
+        "final_theme": "",
+        "is_complete": False,
+    }
 
-以下のタスクを実行してください：
+    # グラフを実行
+    print("\n🤖 マルチエージェントシステムを起動しています...\n")
 
-【フェーズ1: 生成とリフレクション】
-1. カテゴリ「{category}」のテーマを generate_theme ツールで生成
-2. 生成したテーマを review_theme ツールで品質評価
-   - 評価結果の "approved" が true なら次のフェーズへ
-   - false なら "improvement_suggestions" を参考に最大3回まで再生成
-   - 3回試しても approved=true にならない場合は、最も高スコアのテーマを採用
-
-【フェーズ2: 類似度チェック】
-3. 承認されたテーマの類似度を check_theme_similarity ツールでチェック（閾値: 0.7）
-   - ユニーク（is_unique=true）ならフェーズ3へ
-   - 重複（is_unique=false）ならフェーズ1に戻る（最大3回）
-
-【フェーズ3: 保存】
-4. save_theme ツールでテーマを保存
-
-【最終報告】
-5. 生成プロセス（試行回数、リフレクション結果）と最終テーマを報告
-
-重要：
-- review_theme の評価基準（魅力度、独創性、適合性、明確性）を理解し、フィードバックを活用すること
-- 改善提案に基づいて具体的に改良すること
-- 必ず上記の手順に従い、ツールを適切に使用してください"""
-
-    # エージェントを実行
-    print("\n🤖 エージェントを起動しています...\n")
-
-    result = agent.invoke(
-        {
-            "messages": [HumanMessage(content=system_prompt)],
-        }
-    )
+    result = graph.invoke(initial_state)
 
     # 結果を表示
-    print("\n" + "=" * 60)
-    print("エージェントの最終レスポンス:")
-    print("=" * 60)
-    print(result["messages"][-1].content)
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("🎉 テーマ生成が完了しました！")
+    print("=" * 70)
+    print(f"最終テーマ: {result['final_theme']}")
+    print(f"カテゴリ: {result['category']}")
+    print(f"生成試行回数: {result['generation_attempts']}")
+    print(f"類似度チェック試行回数: {result['validation_attempts']}")
+
+    if result.get("review_result"):
+        review = result["review_result"]
+        print(f"\n品質評価スコア: {review.get('total_score', 'N/A')}/10.0")
+        print(f"  - 魅力度: {review.get('scores', {}).get('attractiveness', 'N/A')}/10")
+        print(f"  - 独創性: {review.get('scores', {}).get('originality', 'N/A')}/10")
+        print(f"  - 適合性: {review.get('scores', {}).get('category_fit', 'N/A')}/10")
+        print(f"  - 明確性: {review.get('scores', {}).get('clarity', 'N/A')}/10")
+
+    if result.get("similarity_result"):
+        sim = result["similarity_result"]
+        print(f"\n類似度チェック:")
+        print(f"  - ユニーク: {'はい' if sim.get('is_unique') else 'いいえ'}")
+        print(f"  - 最大類似度: {sim.get('max_similarity', 0):.3f}")
+
+    print("=" * 70)
 
 
 if __name__ == "__main__":
